@@ -1,16 +1,16 @@
-import os
 import cv2
-import numpy as np
-
 
 GRID_ROWS = 3
 GRID_COLS = 5
 
-CLASS_NAMES = [
-    "boulder_ready",
-    "boulder_charging",
-    "pink_target",
-]
+# 你可以視情況調整
+CONF_THRESHOLDS = {
+    "boulder_ready": 0.80,
+    "boulder_charging": 0.80,
+    "pink_target": 0.80,
+    "other": 0.00,
+}
+
 
 def split_grid(board_img, rows=GRID_ROWS, cols=GRID_COLS):
     h, w = board_img.shape[:2]
@@ -43,86 +43,18 @@ def split_grid(board_img, rows=GRID_ROWS, cols=GRID_COLS):
     return cells
 
 
-def crop_center(cell_img, ratio=0.85):
-    h, w = cell_img.shape[:2]
-    nw = int(w * ratio)
-    nh = int(h * ratio)
-    x1 = (w - nw) // 2
-    y1 = (h - nh) // 2
-    return cell_img[y1:y1+nh, x1:x1+nw]
+def classify_cell_with_cnn(cell_img, predictor):
+    pred_label, confidence, score_map = predictor.predict_bgr(cell_img)
+
+    threshold = CONF_THRESHOLDS.get(pred_label, 0.8)
+
+    if pred_label != "other" and confidence < threshold:
+        return "other", confidence, score_map
+
+    return pred_label, confidence, score_map
 
 
-def preprocess(img, size=(64, 64)):
-    """
-    只保留中央區域，再 resize，最後轉灰階
-    """
-    roi = crop_center(img, ratio=0.72)
-    roi = cv2.resize(roi, size)
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    return gray
-
-
-def load_templates():
-    templates = {class_name: [] for class_name in CLASS_NAMES}
-
-    for class_name in CLASS_NAMES:
-        folder = os.path.join("templates", class_name)
-
-        if not os.path.isdir(folder):
-            raise RuntimeError(f"找不到模板資料夾: {folder}")
-
-        for filename in os.listdir(folder):
-            path = os.path.join(folder, filename)
-            img = cv2.imread(path)
-
-            if img is None:
-                continue
-
-            templates[class_name].append(preprocess(img))
-
-        if not templates[class_name]:
-            raise RuntimeError(f"{class_name} 沒有任何可用模板")
-
-    return templates
-
-def match_one_template(cell_img, template_img):
-    cell_proc = preprocess(cell_img)
-
-    result = cv2.matchTemplate(cell_proc, template_img, cv2.TM_CCOEFF_NORMED)
-    score = float(result[0][0])
-    return score
-
-
-def classify_cell(cell_img, templates, thresholds=None):
-    if thresholds is None:
-        thresholds = {
-            "boulder_ready": 0.50,
-            "boulder_charging": 0.50,
-            "pink_target": 0.50,
-        }
-
-    scores = {}
-
-    for class_name, template_list in templates.items():
-        best_score = -1.0
-
-        for tmpl in template_list:
-            score = match_one_template(cell_img, tmpl)
-            if score > best_score:
-                best_score = score
-
-        scores[class_name] = best_score
-
-    best_label = max(scores, key=scores.get)
-    best_score = scores[best_label]
-
-    if best_score < thresholds.get(best_label, 0.50):
-        return "other", scores
-
-    return best_label, scores
-
-
-def find_dice(board_img, templates):
+def find_dice(board_img, predictor):
     cells = split_grid(board_img)
 
     boulder_ready = []
@@ -130,9 +62,11 @@ def find_dice(board_img, templates):
     pink_target = []
 
     for cell in cells:
-        label, scores = classify_cell(cell["img"], templates)
+        label, confidence, score_map = classify_cell_with_cnn(cell["img"], predictor)
+
         cell["label"] = label
-        cell["scores"] = scores
+        cell["confidence"] = confidence
+        cell["scores"] = score_map
 
         if label == "boulder_ready":
             boulder_ready.append(cell)
@@ -150,6 +84,7 @@ def draw_debug(board_img, cells):
     for cell in cells:
         x1, y1, x2, y2 = cell["x1"], cell["y1"], cell["x2"], cell["y2"]
         label = cell.get("label", "other")
+        confidence = cell.get("confidence", 0.0)
         scores = cell.get("scores", {})
 
         if label == "boulder_ready":
@@ -164,10 +99,13 @@ def draw_debug(board_img, cells):
         cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
 
         main_text = f"{cell['row']},{cell['col']} {label}"
-        score_text = (
+        conf_text = f"{confidence:.2f}"
+
+        short_scores = (
             f"R{scores.get('boulder_ready', 0):.2f} "
             f"C{scores.get('boulder_charging', 0):.2f} "
-            f"P{scores.get('pink_target', 0):.2f}"
+            f"P{scores.get('pink_target', 0):.2f} "
+            f"O{scores.get('other', 0):.2f}"
         )
 
         cv2.putText(
@@ -183,10 +121,21 @@ def draw_debug(board_img, cells):
 
         cv2.putText(
             vis,
-            score_text,
+            conf_text,
             (x1 + 3, y1 + 30),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.30,
+            0.36,
+            color,
+            1,
+            cv2.LINE_AA
+        )
+
+        cv2.putText(
+            vis,
+            short_scores,
+            (x1 + 3, y1 + 45),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.28,
             color,
             1,
             cv2.LINE_AA

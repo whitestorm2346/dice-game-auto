@@ -3,10 +3,10 @@ import torch.nn as nn
 
 
 CLASS_NAMES = [
-    "boulder_ready",
     "boulder_charging",
-    "pink_target",
+    "boulder_ready",
     "other",
+    "pink_target",
 ]
 
 

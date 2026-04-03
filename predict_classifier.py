@@ -42,14 +42,3 @@ class DicePredictor:
         }
 
         return pred_label, confidence, score_map
-
-
-if __name__ == "__main__":
-    predictor = DicePredictor()
-
-    img = cv2.imread("test_cell.png")
-    label, confidence, scores = predictor.predict_bgr(img)
-
-    print("label =", label)
-    print("confidence =", confidence)
-    print("scores =", scores)
