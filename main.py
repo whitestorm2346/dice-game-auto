@@ -1,9 +1,13 @@
 from dpi_fix import set_dpi_awareness
 set_dpi_awareness()
 
+import os
+import sys
 import time
 import cv2
-import keyboard  # pip install keyboard
+import keyboard
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from window_selector import choose_window
 from board_locator import get_client_region, capture_window, select_board_roi, crop_board
@@ -24,6 +28,9 @@ SHOW_DRAG_LOG = False           # 是否輸出 drag debug 訊息
 STATUS_PRINT_INTERVAL = 0.3     # 幾秒印一次狀態
 PAUSE_SLEEP = 0.05
 
+SHOW_CONTROL_PANEL = True       # 是否顯示熱鍵 / 狀態面板
+
+
 ready_pick_index = 0
 pink_pick_index = 0
 
@@ -32,6 +39,55 @@ running = True
 paused = False
 manual_drag_requested = False
 roi_select_requested = False
+
+# 顯示在控制面板上的最近狀態文字
+last_status_message = "Program started"
+
+def resource_path(path):
+    base = getattr(sys, "_MEIPASS", os.path.abspath("."))
+    return os.path.join(base, path)
+
+
+def set_status(msg):
+    global last_status_message
+    last_status_message = msg
+    print(msg)
+
+
+def get_zh_font(font_size=24):
+    """
+    取得 Windows 常見中文字型。
+    """
+    font_candidates = [
+        r"C:\Windows\Fonts\msjh.ttc",      # 微軟正黑體
+        r"C:\Windows\Fonts\msjhbd.ttc",
+        r"C:\Windows\Fonts\mingliu.ttc",   # 細明體
+        r"C:\Windows\Fonts\kaiu.ttf",      # 標楷體
+    ]
+
+    for path in font_candidates:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, font_size)
+            except Exception:
+                pass
+
+    return ImageFont.load_default()
+
+
+def put_text_zh(img, text, pos, font_size=24, color=(255, 255, 255)):
+    """
+    在 OpenCV 圖片上用 Pillow 畫中文。
+    color 請用 BGR 傳入，函式內會轉成 RGB。
+    """
+    img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(img_pil)
+    font = get_zh_font(font_size)
+
+    rgb_color = (color[2], color[1], color[0])
+    draw.text(pos, text, font=font, fill=rgb_color)
+
+    return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
 
 def has_board_changed(before_img, after_img, threshold=3.0):
@@ -64,35 +120,137 @@ def choose_any_ready_and_any_pink(
     return src, dst, ready_index, pink_index
 
 
+def render_control_panel(board_roi):
+    """
+    顯示所有熱鍵與目前狀態。
+    英文固定欄位可用 cv2.putText。
+    中文說明與最後訊息改用 Pillow，避免亂碼。
+    """
+    panel_h = 560
+    panel_w = 560
+    panel = np.zeros((panel_h, panel_w, 3), dtype=np.uint8)
+
+    title_color = (0, 255, 255)
+    label_color = (220, 220, 220)
+    value_on_color = (0, 255, 0)
+    value_off_color = (0, 120, 255)
+    info_color = (255, 255, 255)
+
+    y = 30
+    line_gap = 32
+
+    cv2.putText(panel, "Dice Bot Control Panel", (15, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, title_color, 2, cv2.LINE_AA)
+
+    y += 42
+    cv2.putText(panel, "Hotkeys:", (15, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, label_color, 2, cv2.LINE_AA)
+
+    hotkey_lines = [
+        ("F7",  "框選骰子區域"),
+        ("F8",  "暫停 / 繼續"),
+        ("F9",  "切換自動拖曳"),
+        ("F10", "手動拖曳一次"),
+        ("ESC", "結束應用程式"),
+    ]
+
+    for key_name, desc in hotkey_lines:
+        y += line_gap
+        cv2.putText(panel, f"{key_name:<4} :", (25, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.58, info_color, 1, cv2.LINE_AA)
+        panel = put_text_zh(panel, desc, (115, y - 20), font_size=24, color=info_color)
+
+    y += 46
+    cv2.putText(panel, "Status:", (15, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, label_color, 2, cv2.LINE_AA)
+
+    y += line_gap
+    cv2.putText(panel, "Running:", (25, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, label_color, 1, cv2.LINE_AA)
+    cv2.putText(panel, str(running), (180, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58,
+                value_on_color if running else value_off_color, 2, cv2.LINE_AA)
+
+    y += line_gap
+    cv2.putText(panel, "Paused:", (25, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, label_color, 1, cv2.LINE_AA)
+    cv2.putText(panel, str(paused), (180, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58,
+                value_off_color if paused else value_off_color, 2, cv2.LINE_AA)
+
+    y += line_gap
+    cv2.putText(panel, "Auto Drag:", (25, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, label_color, 1, cv2.LINE_AA)
+    cv2.putText(panel, str(AUTO_DRAG), (180, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58,
+                value_on_color if AUTO_DRAG else value_off_color, 2, cv2.LINE_AA)
+
+    y += line_gap
+    roi_selected = board_roi is not None
+    cv2.putText(panel, "ROI Selected:", (25, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, label_color, 1, cv2.LINE_AA)
+    cv2.putText(panel, str(roi_selected), (180, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58,
+                value_on_color if roi_selected else value_off_color, 2, cv2.LINE_AA)
+
+    y += line_gap
+    cv2.putText(panel, "Debug Window:", (25, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, label_color, 1, cv2.LINE_AA)
+    cv2.putText(panel, str(SHOW_DEBUG_WINDOW), (180, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58,
+                value_on_color if SHOW_DEBUG_WINDOW else value_off_color, 2, cv2.LINE_AA)
+
+    y += 46
+    cv2.putText(panel, "Last Message:", (15, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, label_color, 2, cv2.LINE_AA)
+
+    # 中文訊息改用 Pillow 畫，避免亂碼
+    message_lines = []
+    max_chars_per_line = 22
+    msg = last_status_message
+
+    while msg:
+        message_lines.append(msg[:max_chars_per_line])
+        msg = msg[max_chars_per_line:]
+        if len(message_lines) >= 4:
+            break
+
+    for line in message_lines:
+        y += line_gap
+        panel = put_text_zh(panel, line, (25, y - 20), font_size=22, color=info_color)
+
+    cv2.imshow("Dice Bot Control Panel", panel)
+
+
 # ===== 全域熱鍵函式 =====
 def request_roi_selection():
     global roi_select_requested
     roi_select_requested = True
-    print("[HOTKEY] ROI selection requested")
+    set_status("[HOTKEY] ROI selection requested")
 
 
 def toggle_pause():
     global paused
     paused = not paused
-    print(f"[HOTKEY] paused = {paused}")
+    set_status(f"[HOTKEY] paused = {paused}")
 
 
 def stop_program():
     global running
     running = False
-    print("[HOTKEY] stopping program...")
+    set_status("[HOTKEY] stopping program...")
 
 
 def toggle_auto_drag():
     global AUTO_DRAG
     AUTO_DRAG = not AUTO_DRAG
-    print(f"[HOTKEY] AUTO_DRAG = {AUTO_DRAG}")
+    set_status(f"[HOTKEY] AUTO_DRAG = {AUTO_DRAG}")
 
 
 def request_manual_drag():
     global manual_drag_requested
     manual_drag_requested = True
-    print("[HOTKEY] manual drag requested")
+    set_status("[HOTKEY] manual drag requested")
 
 
 def register_hotkeys():
@@ -163,6 +321,9 @@ def do_one_drag(
         if SHOW_DRAG_LOG:
             print(f"[{drag_mode}] drag success? {'YES' if changed else 'NO'}")
 
+    set_status(
+        f"[{drag_mode}] drag ({src['row']},{src['col']}) -> ({dst['row']},{dst['col']})"
+    )
     return True
 
 
@@ -171,7 +332,6 @@ def main():
 
     print("=== Dice Bot (CNN Live Test) ===")
 
-    # 先註冊全域熱鍵
     register_hotkeys()
 
     # 1. 選視窗
@@ -180,18 +340,21 @@ def main():
     time.sleep(0.5)
 
     # 2. 載入 CNN 模型
-    predictor = DicePredictor("dice_cnn.pth")
-    print("CNN 模型載入成功")
+    predictor = DicePredictor(resource_path("dice_cnn.pth"))
+    set_status("CNN 模型載入成功")
 
     # 3. 啟動時先不選 ROI，等你按 F7 再選
     board_roi = None
-    print("尚未選取盤面 ROI，請先把模擬器準備好，再按 F7 進行格子區選取")
+    set_status("尚未選取盤面 ROI，請先把模擬器準備好，再按 F7")
 
     last_drag_time = 0
     last_status_print_time = 0
 
     while running:
         try:
+            if SHOW_CONTROL_PANEL:
+                render_control_panel(board_roi)
+
             # 優先處理 ROI 選取請求
             if roi_select_requested:
                 roi_select_requested = False
@@ -199,10 +362,12 @@ def main():
                 window_region = get_client_region(win)
                 window_img = capture_window(window_region, win)
                 board_roi = select_board_roi(window_img, window_region)
-                print(f"盤面 ROI = {board_roi}")
+                set_status(f"盤面 ROI = {board_roi}")
 
-                # 選完 ROI 後關掉 ROI 視窗
-                cv2.destroyAllWindows()
+                try:
+                    cv2.destroyWindow("Board ROI Preview")
+                except Exception:
+                    pass
                 continue
 
             if paused:
@@ -212,6 +377,7 @@ def main():
 
             # 還沒選 ROI 前，不進入掃描邏輯
             if board_roi is None:
+                cv2.waitKey(1)
                 time.sleep(0.05)
                 continue
 
@@ -258,7 +424,7 @@ def main():
                     time.sleep(ACTION_SETTLE_TIME)
                     continue
                 else:
-                    print("[MANUAL] 沒有找到可拖曳的巨石骰或粉色目標骰")
+                    set_status("[MANUAL] 沒有找到可拖曳的巨石骰或粉色目標骰")
 
             # 5B. 自動拖曳：每次只拖一次，拖完立刻重掃整盤
             if AUTO_DRAG and boulder_ready and pink_target and (now - last_drag_time >= DRAG_COOLDOWN):
@@ -281,7 +447,7 @@ def main():
             key = cv2.waitKey(1) & 0xFF
 
             if key == ord("q"):
-                print("[cv2] q pressed -> stop")
+                set_status("[cv2] q pressed -> stop")
                 break
             elif key == ord("r"):
                 request_roi_selection()
@@ -297,7 +463,7 @@ def main():
         except KeyboardInterrupt:
             break
         except Exception as e:
-            print("錯誤:", e)
+            set_status(f"錯誤: {e}")
             time.sleep(0.3)
 
     try:

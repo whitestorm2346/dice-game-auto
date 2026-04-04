@@ -2,3 +2,6 @@ raw_cells
 dataset
 __pycache__
 dice_cnn.pth
+build
+dist
+DiceBot.spec
